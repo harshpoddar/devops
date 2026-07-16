@@ -42,6 +42,9 @@ def main() -> int:
     parser.add_argument("--id", required=True, help="source instance id to clone")
     parser.add_argument("--region", help="AWS region (default: your AWS config)")
     parser.add_argument("--offer-id", help="Vast: target offer id (default: cheapest matching GPU)")
+    parser.add_argument("--cuda", type=float, metavar="VER",
+                        help="Vast: require host CUDA >= VER on the clone "
+                             "(default: the source host's CUDA version)")
     parser.add_argument("--name", help="name for the clone (default: <source-name>-clone)")
     parser.add_argument("--disk", type=int, dest="disk_gb", help="override disk size GB")
     parser.add_argument("--with-data", action="store_true",
@@ -73,6 +76,8 @@ def main() -> int:
 
     if args.offer_id:
         spec["offer_id"] = args.offer_id
+    if args.cuda is not None:
+        spec["cuda"] = args.cuda
     if args.name:
         spec["name"] = args.name
     if args.disk_gb:

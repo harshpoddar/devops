@@ -28,6 +28,9 @@ from .base import (
 # Vast is mid-migration from /api/v0 to /api/v1 (verified 2026-07-16):
 # instance LISTING is v1-only (v0 returns 410); search/create/state/delete/
 # users/copy still live on v0 only. Paths below carry their version explicitly.
+# Search quirk (verified 2026-07-16): the bundles index no longer matches
+# {"id": {"eq": N}} — it returns 200 with zero rows even for a live offer.
+# Look offers up by {"ask_contract_id": {"eq": N}} instead.
 API_ROOT = "https://console.vast.ai/api"
 DEFAULT_IMAGE = "pytorch/pytorch:latest"
 SEARCH_FETCH_LIMIT = 512  # fetch broad, filter client-side (server-side eq-only matching is too rigid)
@@ -142,14 +145,20 @@ class VastProvider(Provider):
         return data.get("offers", [])
 
     def list_offers(self, filters: OfferFilter) -> "list[Offer]":
+        # Mirrors the official CLI's default filters (verified/rentable/not rented/
+        # not external) — without "rented" the API lists machines someone else is
+        # already on, which look cheap but can't actually be created.
         base_query = {
             "rentable": {"eq": True},
+            "rented": {"eq": False},
             "verified": {"eq": True},
             "external": {"eq": False},
             "type": "on-demand",
             "order": [["dph_total", "asc"]],
             "limit": SEARCH_FETCH_LIMIT,
         }
+        if filters.min_cuda is not None:
+            base_query["cuda_max_good"] = {"gte": filters.min_cuda}
         rows = self._search(base_query)
         offers = self._filter_offers(rows, filters)
         # The cheapest-512 window misses expensive GPUs (H100/H200/B200): retry
@@ -174,6 +183,8 @@ class VastProvider(Provider):
                 continue
             if wanted_gpu and wanted_gpu not in (offer.gpu_type or "").lower():
                 continue
+            if filters.min_cuda is not None and (offer.extra.get("cuda") or 0) < filters.min_cuda:
+                continue
             if filters.min_vcpus and (offer.vcpus or 0) < filters.min_vcpus:
                 continue
             if filters.min_memory_gb and (offer.memory_gb or 0) < filters.min_memory_gb:
@@ -188,22 +199,41 @@ class VastProvider(Provider):
     # ------------------------------------------------------------------ spawn
 
     def _find_offer(self, spec: dict) -> Offer:
+        min_cuda = spec.get("cuda")
         if spec.get("offer_id"):
             wanted = str(spec["offer_id"])
+            # NOTE: {"id": {"eq": N}} silently matches nothing in the bundles index
+            # (see header) — ask_contract_id is the key that works, and offer ids
+            # from list_offers ARE ask contract ids.
             rows = self._search(
-                {"id": {"eq": int(wanted)}, "type": "on-demand", "limit": 5}
+                {"ask_contract_id": {"eq": int(wanted)}, "type": "on-demand", "limit": 5}
             )
             for row in rows:
-                if str(row.get("id")) == wanted or str(row.get("ask_contract_id")) == wanted:
-                    return self._row_to_offer(row)
+                if str(row.get("id")) != wanted and str(row.get("ask_contract_id")) != wanted:
+                    continue
+                if row.get("rented") or row.get("rentable") is False:
+                    raise CloudOpsError(
+                        f"Vast offer {wanted} exists but is no longer rentable "
+                        "(someone else took it) — re-run list_offers and pick a fresh one."
+                    )
+                offer = self._row_to_offer(row)
+                offer_cuda = offer.extra.get("cuda")
+                if min_cuda is not None and (offer_cuda or 0) < min_cuda:
+                    raise CloudOpsError(
+                        f"Vast offer {wanted} only supports CUDA {offer_cuda}, below the "
+                        f"required {min_cuda} — pick an offer with a high enough `cuda` "
+                        "from list_offers (or drop/lower --cuda)."
+                    )
+                return offer
             raise CloudOpsError(
-                f"Vast offer {wanted} is gone or no longer rentable — offers churn quickly; "
+                f"Vast offer {wanted} no longer exists — offers churn quickly; "
                 "re-run list_offers and pick a fresh one."
             )
         matches = self.list_offers(
             OfferFilter(
                 min_gpus=spec.get("gpus") or 1,
                 gpu_type=spec.get("gpu_type"),
+                min_cuda=min_cuda,
                 max_hourly_usd=spec.get("max_hourly"),
                 limit=1,
             )
@@ -230,6 +260,8 @@ class VastProvider(Provider):
                 "image": spec.get("image") or DEFAULT_IMAGE,
                 "disk_gb": disk_gb,
                 "storage_monthly_usd_est": storage_monthly,
+                "cuda": offer.extra.get("cuda"),  # host's max CUDA — check against the workload's needs BEFORE approving
+                **({"cuda_required_min": spec["cuda"]} if spec.get("cuda") is not None else {}),
                 "reliability": offer.extra.get("reliability"),
                 "download_mbps": offer.extra.get("download_mbps"),
                 "billing_note": "GPU time bills while running; disk storage bills while the instance exists (even stopped).",
@@ -317,6 +349,9 @@ class VastProvider(Provider):
         return {
             "gpu_type": gpu or None,
             "gpus": row.get("num_gpus") or 1,
+            # Floor the clone's host CUDA at the source's — the auto-picked offer
+            # must run whatever the source's image/driver stack was built for.
+            "cuda": row.get("cuda_max_good"),
             "image": row.get("image_uuid") or row.get("image"),  # v1 uses image_uuid
             "onstart": row.get("onstart") or None,
             "disk_gb": int(row.get("disk_space") or 20),

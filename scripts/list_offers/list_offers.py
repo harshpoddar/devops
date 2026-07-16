@@ -24,6 +24,9 @@ def main() -> int:
     parser.add_argument("--region", help="AWS region (default: your AWS config)")
     parser.add_argument("--gpus", type=int, help="minimum number of GPUs")
     parser.add_argument("--gpu-type", help='GPU model substring, e.g. "A100", "RTX 4090", "T4"')
+    parser.add_argument("--cuda", type=float, dest="min_cuda", metavar="VER",
+                        help="minimum host CUDA version, e.g. 12.8 (Vast only — on AWS "
+                             "CUDA comes from the AMI, not the hardware)")
     parser.add_argument("--min-vcpus", type=int, help="minimum vCPUs")
     parser.add_argument("--min-memory", type=float, help="minimum RAM in GB")
     parser.add_argument("--max-hourly", type=float, help="maximum on-demand price in USD/hour")
@@ -36,6 +39,7 @@ def main() -> int:
         min_memory_gb=args.min_memory,
         min_gpus=args.gpus,
         gpu_type=args.gpu_type,
+        min_cuda=args.min_cuda,
         max_hourly_usd=args.max_hourly,
         limit=args.limit,
     )

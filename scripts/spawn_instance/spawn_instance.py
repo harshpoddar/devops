@@ -46,6 +46,9 @@ def main() -> int:
     parser.add_argument("--offer-id", help="Vast.ai offer id from list_offers")
     parser.add_argument("--gpu-type", help='auto-pick cheapest Vast offer matching this GPU, e.g. "RTX 4090"')
     parser.add_argument("--gpus", type=int, help="minimum GPUs when auto-picking a Vast offer")
+    parser.add_argument("--cuda", type=float, metavar="VER",
+                        help="Vast: require host CUDA >= VER (e.g. 13). Filters auto-picks "
+                             "and rejects an explicit --offer-id below it.")
     parser.add_argument("--image", help="docker image for Vast (default pytorch/pytorch:latest)")
     parser.add_argument("--onstart", help="shell command to run on start (Vast)")
     # Common
@@ -76,6 +79,7 @@ def main() -> int:
         "offer_id": args.offer_id,
         "gpu_type": args.gpu_type,
         "gpus": args.gpus,
+        "cuda": args.cuda,
         "image": args.image,
         "onstart": args.onstart,
         "disk_gb": args.disk_gb,

@@ -58,12 +58,16 @@ host ports. Use this whenever the user asks what's running or needs an instance 
 
 ```bash
 python scripts/list_offers/list_offers.py [--provider all] \
-  [--gpus 1] [--gpu-type "A100"] [--min-vcpus 8] [--min-memory 32] \
+  [--gpus 1] [--gpu-type "A100"] [--cuda 12.8] [--min-vcpus 8] [--min-memory 32] \
   [--max-hourly 1.50] [--limit 15] [--json]
 ```
 
 Cheapest first. Vast offer IDs churn — treat them as valid for minutes, not hours.
-First AWS run is slow (pricing API); results are cached for a week in `~/.cloudops/cache/`.
+Vast results only include verified, currently-rentable, not-already-rented offers
+(suspiciously cheap offers outside these filters are usually not actually rentable).
+`--cuda VER` keeps only hosts whose CUDA is ≥ VER (Vast only; each offer's CUDA
+shows in the Notes column / `extra.cuda`). First AWS run is slow (pricing API);
+results are cached for a week in `~/.cloudops/cache/`.
 
 ### 3. Spawn an instance — ⚠ costs money, approval is mandatory
 
@@ -83,9 +87,14 @@ python scripts/spawn_instance/spawn_instance.py --provider aws --type g5.xlarge 
 
 # Vast (pick an --offer-id from list_offers, or auto-pick cheapest by GPU)
 python scripts/spawn_instance/spawn_instance.py --provider vast \
-  --gpu-type "RTX 4090" --gpus 1 [--image pytorch/pytorch:latest] [--disk 40] \
-  [--open-port 8888] --quote
+  --gpu-type "RTX 4090" --gpus 1 [--cuda 12.8] [--image pytorch/pytorch:latest] \
+  [--disk 40] [--open-port 8888] --quote
 ```
+
+Vast CUDA: if the workload/image needs a minimum CUDA version, pass `--cuda VER` —
+it constrains auto-picks AND rejects an explicit `--offer-id` whose host is below it.
+The quote's `cuda` field shows the picked host's version: confirm it meets the
+requirement before asking the user to approve.
 
 Ports: `--open-port N` (repeatable) exposes TCP ports. On AWS it creates a
 dedicated, tagged security group **open to 0.0.0.0/0** (tell the user; port 22
@@ -120,12 +129,14 @@ Vast start fails with no capacity, offer clone_instance instead.
 
 ```bash
 python scripts/clone_instance/clone_instance.py --provider vast --id 12345 \
-  [--with-data] [--data-path /workspace] [--offer-id N] [--name X] [--disk GB] \
-  [--open-port N] [--max-hourly USD] --quote
+  [--with-data] [--data-path /workspace] [--offer-id N] [--cuda VER] [--name X] \
+  [--disk GB] [--open-port N] [--max-hourly USD] --quote
 ```
 
 Default: recreates the instance's **configuration** (GPU model/count, image,
 disk size, onstart / AMI, type, security groups) — disk contents NOT copied.
+Vast clones also require the new host's CUDA ≥ the source host's, so the same
+image keeps working; `--cuda VER` overrides that floor (up or down).
 `--with-data` makes it a replica: AWS snapshots the source into an AMI first
 (minutes; AMI + snapshots bill storage until deregistered; no source downtime
 unless `--reboot-source`); Vast waits for the clone to boot then rsyncs

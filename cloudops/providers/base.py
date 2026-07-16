@@ -61,6 +61,7 @@ class OfferFilter:
     min_memory_gb: Optional[float] = None
     min_gpus: Optional[int] = None
     gpu_type: Optional[str] = None  # substring match, e.g. "A100", "RTX 4090"
+    min_cuda: Optional[float] = None  # minimum host CUDA version (Vast cuda_max_good); AWS ignores it
     max_hourly_usd: Optional[float] = None
     limit: int = 15
 

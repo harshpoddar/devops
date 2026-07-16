@@ -66,6 +66,8 @@ def print_offers(offers) -> None:
     for o in offers:
         monthly = o.hourly_usd * 730 if o.hourly_usd is not None else None
         notes = []
+        if o.extra.get("cuda"):
+            notes.append(f"CUDA {o.extra['cuda']}")
         if o.extra.get("reliability"):
             notes.append(f"rel {o.extra['reliability']:.2f}")
         if o.extra.get("download_mbps"):
