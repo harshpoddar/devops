@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cloudops-skill"
+version = "0.1.0"
+description = "On-demand cloud compute (AWS EC2 + Vast.ai GPUs) for agents and humans"
+requires-python = ">=3.9"
+dependencies = [
+    "boto3>=1.34",
+    "requests>=2.31",
+    "rich>=13.0",
+]
+
+[project.scripts]
+cloudops = "cloudops.cli:main"
+cloudops-dashboard = "cloudops.dashboard:main"
+
+[tool.setuptools.packages.find]
+include = ["cloudops*"]

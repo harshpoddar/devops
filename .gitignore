@@ -1,0 +1,19 @@
+# environments / build
+.venv/
+.venv.bak/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.DS_Store
+
+# secrets — never commit credentials of any kind
+.env
+.env.*
+*.pem
+*.key
+*_api_key
+credentials*
+.aws/
+.cloudops/
