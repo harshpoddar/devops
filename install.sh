@@ -41,6 +41,37 @@ fi
 .venv/bin/pip install --quiet -e .
 echo "✓ cloudops installed into $(pwd)/.venv"
 
+# ------------------------------------------------------- Global CLI commands
+# Symlink the venv's entry points into ~/.local/bin so `cloudops` and
+# `cloudops-dashboard` work from any directory. The scripts' shebangs point at
+# this venv's interpreter, so they stay isolated from other Python setups.
+BIN_DIR="$HOME/.local/bin"
+mkdir -p "$BIN_DIR"
+for tool in cloudops cloudops-dashboard; do
+  ln -sf "$(pwd)/.venv/bin/$tool" "$BIN_DIR/$tool"
+done
+echo "✓ Linked cloudops + cloudops-dashboard into $BIN_DIR"
+
+case ":$PATH:" in
+  *":$BIN_DIR:"*)
+    echo "✓ $BIN_DIR already on PATH"
+    ;;
+  *)
+    case "${SHELL:-}" in
+      */zsh)  PROFILE="$HOME/.zshrc" ;;
+      */bash) PROFILE="$HOME/.bashrc" ;;
+      *)      PROFILE="" ;;
+    esac
+    if [ -n "$PROFILE" ] && ! grep -qs 'HOME/.local/bin' "$PROFILE"; then
+      printf '\n# added by cloud-devops skill installer\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$PROFILE"
+      echo "✓ Added $BIN_DIR to PATH in $PROFILE — open a new shell (or run: export PATH=\"\$HOME/.local/bin:\$PATH\")"
+    else
+      echo "! Add $BIN_DIR to your PATH to use the CLIs globally:"
+      echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+    fi
+    ;;
+esac
+
 # ---------------------------------------------------------------- Credentials
 if aws sts get-caller-identity >/dev/null 2>&1; then
   echo "✓ AWS credentials working ($(aws sts get-caller-identity --query Arn --output text 2>/dev/null))"
@@ -58,9 +89,8 @@ fi
 
 cat <<'EOF'
 
-Next steps:
-  source .venv/bin/activate
-  cloudops                                            # interactive CLI (usage + instances)
-  cloudops-dashboard                                  # local web dashboard on :8787
-  python scripts/list_instances/list_instances.py     # or any script in scripts/
+Next steps (from any directory):
+  cloudops                                                  # interactive CLI (usage + instances)
+  cloudops-dashboard                                        # local web dashboard on :8787
+  .venv/bin/python scripts/list_instances/list_instances.py # agent scripts (from this repo)
 EOF

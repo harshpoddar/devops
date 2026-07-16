@@ -17,6 +17,11 @@ aws configure             # or: aws configure sso && aws sso login
 export VAST_API_KEY=...   # optional — https://cloud.vast.ai/account/
 ```
 
+The installer also links `cloudops` and `cloudops-dashboard` into `~/.local/bin`
+(adding it to your shell PATH if needed), so both commands work globally — no
+venv activation required. Agent scripts under `scripts/` still run with the
+skill's interpreter: `.venv/bin/python scripts/<name>/<name>.py`.
+
 ## Layout
 
 ```
