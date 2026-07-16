@@ -37,6 +37,9 @@ scripts/
   list_instances/            running/stopped instances across providers
   list_offers/               purchasable types & GPU offers with $/hr, filterable
   spawn_instance/            quote → user approval → create (tagged + audit-logged)
+  start_instance/            start a stopped instance (billing resumes)
+  stop_instance/             stop without destroying (storage still bills)
+  clone_instance/            recreate an instance as a new one; --with-data for a full replica
   terminate_instance/        confirm → destroy (unmanaged AWS instances need --force)
   account_metrics/           month-to-date spend, burn rate, Vast balance
 ```

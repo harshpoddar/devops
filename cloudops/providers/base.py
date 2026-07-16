@@ -29,6 +29,7 @@ class Instance:
     launched_at: Optional[str] = None
     gpu: Optional[str] = None
     managed: bool = False  # created by this skill (tag / ownership)
+    ports: Optional[dict] = None  # exposed port → public port (Vast port mappings)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -120,3 +121,40 @@ class Provider(ABC):
             if inst.id == str(instance_id):
                 return inst
         return None
+
+    # Optional capabilities — providers override what they support.
+
+    def start(self, instance_id: str) -> None:
+        raise CloudOpsError(f"The {self.name} provider does not support starting instances.")
+
+    def stop(self, instance_id: str) -> None:
+        raise CloudOpsError(f"The {self.name} provider does not support stopping instances.")
+
+    def clone_spec(self, instance_id: str) -> dict:
+        """Build a spawn spec that recreates this instance's configuration.
+
+        Clones the template (type/image/settings), NOT the disk contents.
+        """
+        raise CloudOpsError(f"The {self.name} provider does not support cloning instances.")
+
+    def snapshot_image(self, instance_id: str, reboot: bool = False) -> str:
+        """Create a reusable machine image (incl. disks) from an instance; returns its id."""
+        raise CloudOpsError(f"The {self.name} provider does not support image snapshots.")
+
+    def copy_data(self, src_id: str, dst_id: str, src_path: str, dst_path: str) -> str:
+        """Copy a directory between two instances; returns a status message."""
+        raise CloudOpsError(f"The {self.name} provider does not support instance-to-instance copy.")
+
+    def wait_for_status(self, instance_id: str, want: str = "running",
+                        timeout_seconds: int = 600, poll_seconds: int = 10) -> None:
+        import time
+
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            inst = self.describe_instance(instance_id)
+            if inst and inst.status == want:
+                return
+            time.sleep(poll_seconds)
+        raise CloudOpsError(
+            f"Instance {instance_id} did not reach '{want}' within {timeout_seconds}s."
+        )

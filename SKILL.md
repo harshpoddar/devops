@@ -49,8 +49,10 @@ failing the others.
 python scripts/list_instances/list_instances.py [--provider all] [--region us-east-1] [--json]
 ```
 
-Returns id, name, status, type, region, IP/SSH endpoint, $/hr, and whether the
-instance is `managed` (created by this skill — AWS tag `managed-by=cloudops-skill`).
+Returns id, name, status, type, region, IP/SSH endpoint, $/hr, whether the
+instance is `managed` (created by this skill — AWS tag `managed-by=cloudops-skill`),
+and for Vast a `ports` map showing how exposed container ports map to public
+host ports. Use this whenever the user asks what's running or needs an instance id.
 
 ### 2. List offers — instance types / GPU offers with pricing, filterable
 
@@ -77,12 +79,20 @@ First AWS run is slow (pricing API); results are cached for a week in `~/.cloudo
 # AWS
 python scripts/spawn_instance/spawn_instance.py --provider aws --type g5.xlarge \
   [--region us-east-1] [--ami ami-...] [--disk 100] [--key-name my-key] \
-  [--security-group sg-...] [--name train-run-1] [--ttl-hours 8] --quote
+  [--security-group sg-...] [--open-port 8888] [--name train-run-1] [--ttl-hours 8] --quote
 
 # Vast (pick an --offer-id from list_offers, or auto-pick cheapest by GPU)
 python scripts/spawn_instance/spawn_instance.py --provider vast \
-  --gpu-type "RTX 4090" --gpus 1 [--image pytorch/pytorch:latest] [--disk 40] --quote
+  --gpu-type "RTX 4090" --gpus 1 [--image pytorch/pytorch:latest] [--disk 40] \
+  [--open-port 8888] --quote
 ```
+
+Ports: `--open-port N` (repeatable) exposes TCP ports. On AWS it creates a
+dedicated, tagged security group **open to 0.0.0.0/0** (tell the user; port 22
+is auto-added when --key-name is given and no explicit --security-group);
+`--security-group sg-...` attaches existing groups for finer control. On Vast
+each exposed port is mapped to a **random public host port** — read the actual
+mapping from the `ports` field of list_instances --json once running.
 
 Guards and behavior:
 - `--max-hourly USD` aborts (exit 2) if the quote exceeds it — use it as a belt-and-braces cap.
@@ -93,7 +103,37 @@ Guards and behavior:
   are appended to `~/.cloudops/audit.log`.
 - After spawning, always remind the user the instance **bills until terminated**.
 
-### 4. Terminate an instance
+### 4. Start / stop an instance
+
+```bash
+python scripts/start_instance/start_instance.py --provider vast --id 12345 [--yes] [--json]
+python scripts/stop_instance/stop_instance.py  --provider vast --id 12345 [--yes] [--json]
+```
+
+Confirmation required (get the user's OK, then `--yes`); unmanaged AWS instances
+need `--force`. Cost facts to tell the user: stopping halts compute/GPU billing
+but **storage keeps billing** on both providers; on Vast a restart is **not
+guaranteed** — the host may rent the GPUs to someone else while stopped. If a
+Vast start fails with no capacity, offer clone_instance instead.
+
+### 5. Clone an instance
+
+```bash
+python scripts/clone_instance/clone_instance.py --provider vast --id 12345 \
+  [--with-data] [--data-path /workspace] [--offer-id N] [--name X] [--disk GB] \
+  [--open-port N] [--max-hourly USD] --quote
+```
+
+Default: recreates the instance's **configuration** (GPU model/count, image,
+disk size, onstart / AMI, type, security groups) — disk contents NOT copied.
+`--with-data` makes it a replica: AWS snapshots the source into an AMI first
+(minutes; AMI + snapshots bill storage until deregistered; no source downtime
+unless `--reboot-source`); Vast waits for the clone to boot then rsyncs
+`--data-path` (default `/workspace`) source→clone on Vast's side. Creates a
+billed instance, so the spawn contract applies unchanged: `--quote` → user
+approval → re-run with `--yes`. Same exit codes as spawn.
+
+### 6. Terminate an instance
 
 ```bash
 python scripts/terminate_instance/terminate_instance.py --provider aws --id i-0abc... [--yes] [--json]
@@ -102,7 +142,7 @@ python scripts/terminate_instance/terminate_instance.py --provider aws --id i-0a
 Confirmation required (same rule as spawning: get the user's OK, then `--yes`).
 AWS instances **not** tagged `managed-by=cloudops-skill` additionally need `--force`.
 
-### 5. Account metrics
+### 7. Account metrics
 
 ```bash
 python scripts/account_metrics/account_metrics.py [--provider all] [--json]

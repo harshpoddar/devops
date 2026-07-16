@@ -21,8 +21,9 @@ from cloudops.bootstrap import require_deps
 
 require_deps()  # exits 4 with install.sh instructions if deps are missing
 
-from cloudops import config, render
+from cloudops import render
 from cloudops.providers import CloudOpsError, get_provider
+from cloudops.spawn_flow import run_spawn_flow
 
 
 def main() -> int:
@@ -48,6 +49,9 @@ def main() -> int:
     parser.add_argument("--image", help="docker image for Vast (default pytorch/pytorch:latest)")
     parser.add_argument("--onstart", help="shell command to run on start (Vast)")
     # Common
+    parser.add_argument("--open-port", type=int, action="append", dest="open_ports", metavar="PORT",
+                        help="expose a TCP port (repeatable). AWS: dedicated security group, open "
+                             "to 0.0.0.0/0. Vast: Docker port mapped to a random public host port.")
     parser.add_argument("--disk", type=int, dest="disk_gb", help="root/scratch disk GB (aws default 30, vast 20)")
     parser.add_argument("--name", help="instance name / label")
     parser.add_argument("--max-hourly", type=float, help="hard guard: abort if the quote exceeds this USD/hour")
@@ -77,11 +81,11 @@ def main() -> int:
         "disk_gb": args.disk_gb,
         "name": args.name,
         "max_hourly": args.max_hourly,
+        "open_ports": args.open_ports,
     }
 
     try:
         provider = get_provider(args.provider, region=args.region)
-        quote = provider.quote(spec)
     except CloudOpsError as exc:
         if args.json:
             print(json.dumps({"error": str(exc)}))
@@ -89,62 +93,15 @@ def main() -> int:
             render.warn(str(exc))
         return 1
 
-    if not args.json:
-        render.print_quote(quote)
-
-    if args.max_hourly is not None and quote.hourly_usd is not None and quote.hourly_usd > args.max_hourly:
-        msg = f"Quote ${quote.hourly_usd}/hr exceeds --max-hourly ${args.max_hourly} — aborting."
-        print(json.dumps({"quote": quote.to_dict(), "error": msg}) if args.json else msg)
-        return 2
-
-    if args.quote:
-        if args.json:
-            print(json.dumps({"quote": quote.to_dict()}, indent=2))
-        return 0
-
-    if not args.yes:
-        if not sys.stdin.isatty():
-            msg = ("Refusing to spawn without approval: show this quote to the user, "
-                   "and re-run with --yes once they explicitly approve the cost.")
-            print(json.dumps({"quote": quote.to_dict(), "error": msg}) if args.json else msg)
-            return 3
-        answer = input(
-            f"Approve spending {render.money(quote.hourly_usd, 4)}/hr "
-            f"(~{render.money(quote.monthly_usd)}/mo)? Type 'yes' to create: "
-        )
-        if answer.strip().lower() != "yes":
-            print("Aborted — nothing was created.")
-            return 3
-
-    config.audit(
-        "spawn_approved",
-        provider=args.provider,
-        quote=quote.to_dict(),
-        approved_via="--yes flag" if args.yes else "interactive prompt",
+    return run_spawn_flow(
+        provider,
+        args.provider,
+        spec,
+        quote_only=args.quote,
+        yes=args.yes,
+        max_hourly=args.max_hourly,
+        as_json=args.json,
     )
-    try:
-        result = provider.spawn(spec)
-    except CloudOpsError as exc:
-        if args.json:
-            print(json.dumps({"quote": quote.to_dict(), "error": str(exc)}))
-        else:
-            render.warn(str(exc))
-        return 1
-    config.audit("spawn_created", provider=args.provider, instance_id=result.instance_id,
-                 hourly_usd=quote.hourly_usd)
-
-    if args.json:
-        print(json.dumps({"quote": quote.to_dict(), "result": result.to_dict()}, indent=2))
-    else:
-        render.console.print(
-            f"[green]Created[/green] {result.provider} instance [bold]{result.instance_id}[/bold] "
-            f"({result.status}). {result.connect_hint}"
-        )
-        render.console.print(
-            "[yellow]Remember:[/yellow] this bills until terminated — "
-            "scripts/terminate_instance when done."
-        )
-    return 0
 
 
 if __name__ == "__main__":

@@ -261,21 +261,63 @@ class AWSProvider(Provider):
         storage_monthly = round(disk_gb * GP3_USD_PER_GB_MONTH, 2)
         ami, ami_note = self._resolve_ami(spec, info)
         monthly = round(price * HOURS_PER_MONTH + storage_monthly, 2) if price is not None else None
+        details = {
+            "instance_type": itype,
+            "region": self.region,
+            "ami": ami,
+            "ami_note": ami_note,
+            "disk_gb": disk_gb,
+            "storage_monthly_usd_est": storage_monthly,
+            "billing_note": "Compute bills while running; EBS storage bills until the volume is deleted.",
+        }
+        if spec.get("open_ports"):
+            details["open_ports"] = spec["open_ports"]
+            details["port_note"] = ("A dedicated security group will open these ports to "
+                                    "0.0.0.0/0 (the whole internet).")
         return Quote(
             provider="aws",
             description=f"AWS {itype} in {self.region} ({vcpus} vCPU, {mem_gb:.0f} GB RAM{gpu_part})",
             hourly_usd=price,
             monthly_usd=monthly,
-            details={
-                "instance_type": itype,
-                "region": self.region,
-                "ami": ami,
-                "ami_note": ami_note,
-                "disk_gb": disk_gb,
-                "storage_monthly_usd_est": storage_monthly,
-                "billing_note": "Compute bills while running; EBS storage bills until the volume is deleted.",
-            },
+            details=details,
         )
+
+    def _create_port_sg(self, base_name: str, ports: "list[int]",
+                        subnet_id: Optional[str]) -> str:
+        """Create a dedicated, tagged security group opening the given TCP ports to the world."""
+        import time
+
+        with _aws_errors():
+            ec2 = self._client("ec2")
+            if subnet_id:
+                vpc_id = ec2.describe_subnets(SubnetIds=[subnet_id])["Subnets"][0]["VpcId"]
+            else:
+                vpcs = ec2.describe_vpcs(Filters=[{"Name": "isDefault", "Values": ["true"]}])["Vpcs"]
+                if not vpcs:
+                    raise CloudOpsError(
+                        "No default VPC in this region — pass --subnet-id so the port "
+                        "security group lands in the right VPC."
+                    )
+                vpc_id = vpcs[0]["VpcId"]
+            sg_name = f"cloudops-{base_name}-{time.strftime('%Y%m%d%H%M%S')}"
+            sg_id = ec2.create_security_group(
+                GroupName=sg_name,
+                Description=f"cloudops open ports: {', '.join(map(str, ports))}",
+                VpcId=vpc_id,
+                TagSpecifications=[{
+                    "ResourceType": "security-group",
+                    "Tags": [{"Key": config.MANAGED_TAG_KEY, "Value": config.MANAGED_TAG_VALUE},
+                             {"Key": "Name", "Value": sg_name}],
+                }],
+            )["GroupId"]
+            ec2.authorize_security_group_ingress(
+                GroupId=sg_id,
+                IpPermissions=[{
+                    "IpProtocol": "tcp", "FromPort": p, "ToPort": p,
+                    "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "cloudops --open-port"}],
+                } for p in ports],
+            )
+        return sg_id
 
     def spawn(self, spec: dict) -> SpawnResult:
         q = self.quote(spec)
@@ -313,25 +355,109 @@ class AWSProvider(Provider):
             )
             if spec.get("key_name"):
                 kwargs["KeyName"] = spec["key_name"]
-            if spec.get("security_group_ids"):
-                kwargs["SecurityGroupIds"] = spec["security_group_ids"]
+            sg_ids = list(spec.get("security_group_ids") or [])
+            created_sg = None
+            open_ports = [int(p) for p in (spec.get("open_ports") or [])]
+            if open_ports:
+                # SSH would be unreachable through a ports-only SG, so include 22
+                # when a key was given and no explicit SG covers access already.
+                if spec.get("key_name") and 22 not in open_ports and not sg_ids:
+                    open_ports.append(22)
+                created_sg = self._create_port_sg(name, open_ports, spec.get("subnet_id"))
+                sg_ids.append(created_sg)
+            if sg_ids:
+                kwargs["SecurityGroupIds"] = sg_ids
             if spec.get("subnet_id"):
                 kwargs["SubnetId"] = spec["subnet_id"]
-            inst = ec2.run_instances(**kwargs)["Instances"][0]
+            try:
+                inst = ec2.run_instances(**kwargs)["Instances"][0]
+            except Exception:
+                if created_sg:  # don't leave an orphaned security group behind
+                    try:
+                        ec2.delete_security_group(GroupId=created_sg)
+                    except Exception:
+                        pass
+                raise
         hint = "Run list_instances to see its state and IP once running."
         if not spec.get("key_name"):
             hint += " No --key-name was given, so SSH needs another path (e.g. SSM Session Manager)."
+        details = {"region": self.region, "ami": ami, "name": name}
+        if created_sg:
+            details["security_group"] = created_sg
+            details["open_ports"] = open_ports
+            hint += f" Ports {open_ports} are open to the world via {created_sg}."
         return SpawnResult(
             provider="aws",
             instance_id=inst["InstanceId"],
             status=inst["State"]["Name"],
             connect_hint=hint,
-            details={"region": self.region, "ami": ami, "name": name},
+            details=details,
         )
 
     def terminate(self, instance_id: str) -> None:
         with _aws_errors():
             self._client("ec2").terminate_instances(InstanceIds=[instance_id])
+
+    # ------------------------------------------------------------------ start/stop/clone
+
+    def snapshot_image(self, instance_id: str, reboot: bool = False) -> str:
+        """Create an AMI (with EBS snapshots) from an instance and wait until usable.
+
+        NoReboot by default: no downtime for the source, at the cost of a
+        crash-consistent (not filesystem-flushed) snapshot.
+        """
+        import time
+
+        with _aws_errors():
+            ec2 = self._client("ec2")
+            name = f"cloudops-clone-{instance_id}-{time.strftime('%Y%m%d-%H%M%S')}"
+            tags = [{"Key": config.MANAGED_TAG_KEY, "Value": config.MANAGED_TAG_VALUE},
+                    {"Key": "Name", "Value": name}]
+            ami = ec2.create_image(
+                InstanceId=instance_id,
+                Name=name,
+                Description=f"cloudops clone image of {instance_id}",
+                NoReboot=not reboot,
+                TagSpecifications=[{"ResourceType": "image", "Tags": tags},
+                                   {"ResourceType": "snapshot", "Tags": tags}],
+            )["ImageId"]
+            ec2.get_waiter("image_available").wait(
+                ImageIds=[ami], WaiterConfig={"Delay": 15, "MaxAttempts": 80}
+            )
+        return ami
+
+    def start(self, instance_id: str) -> None:
+        with _aws_errors():
+            self._client("ec2").start_instances(InstanceIds=[instance_id])
+
+    def stop(self, instance_id: str) -> None:
+        with _aws_errors():
+            self._client("ec2").stop_instances(InstanceIds=[instance_id])
+
+    def clone_spec(self, instance_id: str) -> dict:
+        with _aws_errors():
+            ec2 = self._client("ec2")
+            reservations = ec2.describe_instances(InstanceIds=[instance_id])["Reservations"]
+            if not reservations or not reservations[0]["Instances"]:
+                raise CloudOpsError(f"No AWS instance with id {instance_id} found in {self.region}.")
+            inst = reservations[0]["Instances"][0]
+            tags = {t["Key"]: t["Value"] for t in inst.get("Tags", [])}
+            disk_gb = None
+            root_name = inst.get("RootDeviceName")
+            for bdm in inst.get("BlockDeviceMappings", []):
+                if bdm.get("DeviceName") == root_name and bdm.get("Ebs", {}).get("VolumeId"):
+                    volumes = ec2.describe_volumes(VolumeIds=[bdm["Ebs"]["VolumeId"]])["Volumes"]
+                    if volumes:
+                        disk_gb = volumes[0]["Size"]
+        return {
+            "instance_type": inst["InstanceType"],
+            "ami": inst["ImageId"],
+            "key_name": inst.get("KeyName"),
+            "security_group_ids": [g["GroupId"] for g in inst.get("SecurityGroups", [])] or None,
+            "subnet_id": inst.get("SubnetId"),
+            "disk_gb": disk_gb,
+            "name": f"{tags.get('Name') or instance_id}-clone",
+        }
 
     # ------------------------------------------------------------------ usage
 
