@@ -9,8 +9,11 @@ description = "On-demand cloud compute (AWS EC2 + Vast.ai GPUs) for agents and h
 requires-python = ">=3.9"
 dependencies = [
     "boto3>=1.34",
-    "requests>=2.31",
     "rich>=13.0",
+    # The Vast.ai backend shells out to the official `vastai` CLI (installed here,
+    # into this skill's own venv) instead of hitting Vast's REST API directly —
+    # the CLI tracks Vast's ongoing v0→v1 migration for us. It pulls in requests.
+    "vastai>=0.2",
 ]
 
 [project.scripts]

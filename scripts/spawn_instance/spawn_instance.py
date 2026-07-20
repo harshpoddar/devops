@@ -23,7 +23,7 @@ require_deps()  # exits 4 with install.sh instructions if deps are missing
 
 from cloudops import render
 from cloudops.providers import CloudOpsError, get_provider
-from cloudops.spawn_flow import run_spawn_flow
+from cloudops.spawn_flow import make_ssh_verify_post_spawn, run_spawn_flow
 
 
 def main() -> int:
@@ -57,6 +57,15 @@ def main() -> int:
                              "to 0.0.0.0/0. Vast: Docker port mapped to a random public host port.")
     parser.add_argument("--disk", type=int, dest="disk_gb", help="root/scratch disk GB (aws default 30, vast 20)")
     parser.add_argument("--name", help="instance name / label")
+    # SSH verification (Vast): after creating, poll an actual SSH login before
+    # declaring success, so we never hand over a box the key hasn't reached yet.
+    parser.add_argument("--ssh-key", help="path to the SSH public key to register/attach and verify "
+                                          "with (default: ~/.ssh/id_ed25519.pub, then id_rsa.pub)")
+    parser.add_argument("--ssh-wait-timeout", type=int, default=720, metavar="SEC",
+                        help="Vast: max seconds to wait for SSH login to work before reporting "
+                             "(default 720; Vast key injection can lag minutes)")
+    parser.add_argument("--no-ssh-wait", action="store_true",
+                        help="skip the post-spawn SSH login check (report as soon as created)")
     parser.add_argument("--max-hourly", type=float, help="hard guard: abort if the quote exceeds this USD/hour")
     parser.add_argument("--quote", action="store_true", help="print the cost quote and exit — creates nothing")
     parser.add_argument("--yes", action="store_true",
@@ -86,6 +95,7 @@ def main() -> int:
         "name": args.name,
         "max_hourly": args.max_hourly,
         "open_ports": args.open_ports,
+        "ssh_pubkey_path": args.ssh_key,
     }
 
     try:
@@ -97,6 +107,20 @@ def main() -> int:
             render.warn(str(exc))
         return 1
 
+    post_spawn = None
+    if not args.no_ssh_wait:
+        if not args.json and not args.quote:
+            render.console.print(
+                f"[dim]After creation, will verify SSH login (up to {args.ssh_wait_timeout}s) "
+                "before reporting success…[/dim]"
+            )
+        post_spawn = make_ssh_verify_post_spawn(
+            provider,
+            timeout_seconds=args.ssh_wait_timeout,
+            pubkey_path=args.ssh_key,
+            as_json=args.json,
+        )
+
     return run_spawn_flow(
         provider,
         args.provider,
@@ -105,6 +129,7 @@ def main() -> int:
         yes=args.yes,
         max_hourly=args.max_hourly,
         as_json=args.json,
+        post_spawn=post_spawn,
     )
 
 

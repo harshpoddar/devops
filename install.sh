@@ -41,6 +41,16 @@ fi
 .venv/bin/pip install --quiet -e .
 echo "✓ cloudops installed into $(pwd)/.venv"
 
+# The Vast.ai backend shells out to the official `vastai` CLI, which is a
+# dependency in pyproject.toml — so `pip install -e .` above puts it INSIDE this
+# venv. The skill always calls that copy (.venv/bin/vastai), never one on the
+# user's PATH, keeping everything self-contained.
+if [ -x .venv/bin/vastai ]; then
+  echo "✓ vastai CLI bundled in the venv: $(.venv/bin/vastai --version 2>&1 | head -1)"
+else
+  echo "! vastai CLI did not install — re-run: .venv/bin/pip install -e ."
+fi
+
 # ------------------------------------------------------- Global CLI commands
 # Symlink the venv's entry points into ~/.local/bin so `cloudops` and
 # `cloudops-dashboard` work from any directory. The scripts' shebangs point at
@@ -80,11 +90,20 @@ else
   echo "  (or, recommended: aws configure sso && aws sso login)"
 fi
 
-if [ -n "${VAST_API_KEY:-}" ] || [ -f "$HOME/.vast_api_key" ]; then
+if [ -n "${VAST_API_KEY:-}" ] || [ -f "$HOME/.vast_api_key" ] || [ -f "$HOME/.config/vastai/vast_api_key" ]; then
   echo "✓ Vast.ai API key found"
 else
   echo "✗ Vast.ai API key missing (optional) — create one at https://cloud.vast.ai/account/"
   echo "  then: export VAST_API_KEY=<key>   (or write it to ~/.vast_api_key)"
+fi
+
+# Vast injects an account-registered SSH public key into each instance at boot.
+# spawn/clone register your local key automatically, but flag it if none exists.
+if ls "$HOME"/.ssh/id_*.pub >/dev/null 2>&1; then
+  echo "✓ Local SSH public key present (used for Vast instance access + the SSH self-check)"
+else
+  echo "! No SSH key at ~/.ssh/id_*.pub — generate one (ssh-keygen -t ed25519) so Vast"
+  echo "  spawns can register it and verify SSH login before reporting success."
 fi
 
 cat <<'EOF'

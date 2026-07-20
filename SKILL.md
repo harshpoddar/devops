@@ -19,14 +19,19 @@ belong in each repo's own scripts — do not put them here.
 | Provider | Use for | Auth |
 |---|---|---|
 | `aws` | EC2 CPU + GPU instances, stable/enterprise workloads | Standard AWS credential chain: `aws configure`, `aws sso login`, or env vars. Region from AWS config or `--region`. |
-| `vast` | Cheap marketplace GPU rentals (often 3–6x cheaper than AWS for the same GPU) | API key in `VAST_API_KEY` env var or `~/.vast_api_key`. Get one at https://cloud.vast.ai/account/. SSH uses the key registered on that same page. |
+| `vast` | Cheap marketplace GPU rentals (often 3–6x cheaper than AWS for the same GPU) | API key in `VAST_API_KEY` env var, `~/.vast_api_key`, or `~/.config/vastai/vast_api_key`. Get one at https://cloud.vast.ai/account/. SSH uses your local key (`~/.ssh/id_ed25519.pub`), which spawn registers on the account automatically. |
+
+The Vast backend drives the official **`vastai` CLI**, bundled inside this skill's
+own `.venv` (installed by `./install.sh`) — not Vast's raw REST API, which returns
+intermittent 410s mid v0→v1 migration. The skill always invokes `.venv/bin/vastai`,
+so nothing depends on a `vastai` on your PATH.
 
 ## Setup (once)
 
 ```bash
-./install.sh          # installs AWS CLI v2 if missing, creates .venv, pip installs this package
+./install.sh          # AWS CLI v2 (if missing), .venv, pip installs this package + the vastai CLI
 aws configure         # or: aws configure sso && aws sso login
-export VAST_API_KEY=...   # optional, only for Vast
+export VAST_API_KEY=...   # optional, only for Vast (or ~/.config/vastai/vast_api_key)
 ```
 
 **Always run scripts with the skill's own interpreter**: `<skill-root>/.venv/bin/python`
@@ -35,6 +40,19 @@ If `.venv` is missing, run `./install.sh` first. Scripts self-check on start: if
 dependencies are missing they exit with code **4** and print the exact fix
 (run `./install.sh`, or the correct interpreter path to re-run with) — relay that
 message to the user or run the installer, then retry.
+
+**The bundled Vast CLI command**: the Vast backend shells out to the official
+`vastai` CLI, which `install.sh` installs **into this skill's own venv**. The skill
+always calls that copy by absolute path — `<skill-root>/.venv/bin/vastai` — so it
+never depends on a `vastai` on the user's PATH. For manual/advanced Vast operations
+not exposed by the scripts, invoke it directly the same way, e.g.:
+
+```bash
+<skill-root>/.venv/bin/vastai show instances --raw
+<skill-root>/.venv/bin/vastai search offers 'gpu_name=RTX_4090 num_gpus=1' -o dph_total --raw
+```
+
+(It reads the API key from `~/.config/vastai/vast_api_key`, or pass `--api-key`.)
 
 ## Scripts
 
@@ -88,7 +106,8 @@ python scripts/spawn_instance/spawn_instance.py --provider aws --type g5.xlarge 
 # Vast (pick an --offer-id from list_offers, or auto-pick cheapest by GPU)
 python scripts/spawn_instance/spawn_instance.py --provider vast \
   --gpu-type "RTX 4090" --gpus 1 [--cuda 12.8] [--image pytorch/pytorch:latest] \
-  [--disk 40] [--open-port 8888] --quote
+  [--disk 40] [--open-port 8888] [--ssh-key ~/.ssh/id_ed25519.pub] \
+  [--ssh-wait-timeout 720] [--no-ssh-wait] --quote
 ```
 
 Vast CUDA: if the workload/image needs a minimum CUDA version, pass `--cuda VER` —
@@ -102,6 +121,20 @@ is auto-added when --key-name is given and no explicit --security-group);
 `--security-group sg-...` attaches existing groups for finer control. On Vast
 each exposed port is mapped to a **random public host port** — read the actual
 mapping from the `ports` field of list_instances --json once running.
+
+Vast SSH — automatic key setup + self-check (this is the fix for the old
+"Permission denied (publickey)" flakiness): after creating, spawn registers your
+local public key on the Vast **account** (so Vast injects it at container boot —
+the reliable path) and attaches it to the instance, then **polls an actual SSH
+login** and only reports success once it works. The result includes the exact
+`ssh -i <key> -p <port> root@<host>` command to hand the user.
+- `--ssh-key PATH` — public key to use (default `~/.ssh/id_ed25519.pub`, then `id_rsa.pub`).
+- `--ssh-wait-timeout SEC` — how long to wait for login (default **720s**; Vast key
+  injection can lag several minutes, so **wait — do not destroy** on the first denials).
+- `--no-ssh-wait` — skip the check and report as soon as created.
+- On timeout the instance is **kept** (it bills) and reported with the ssh command +
+  a "key still propagating, retry shortly" note — never auto-destroyed.
+- Needs a local SSH keypair; if none exists, run `ssh-keygen -t ed25519` first.
 
 Guards and behavior:
 - `--max-hourly USD` aborts (exit 2) if the quote exceeds it — use it as a belt-and-braces cap.
@@ -130,7 +163,8 @@ Vast start fails with no capacity, offer clone_instance instead.
 ```bash
 python scripts/clone_instance/clone_instance.py --provider vast --id 12345 \
   [--with-data] [--data-path /workspace] [--offer-id N] [--cuda VER] [--name X] \
-  [--disk GB] [--open-port N] [--max-hourly USD] --quote
+  [--disk GB] [--open-port N] [--ssh-key PATH] [--ssh-wait-timeout SEC] \
+  [--no-ssh-wait] [--max-hourly USD] --quote
 ```
 
 Default: recreates the instance's **configuration** (GPU model/count, image,
@@ -142,7 +176,10 @@ image keeps working; `--cuda VER` overrides that floor (up or down).
 unless `--reboot-source`); Vast waits for the clone to boot then rsyncs
 `--data-path` (default `/workspace`) source→clone on Vast's side. Creates a
 billed instance, so the spawn contract applies unchanged: `--quote` → user
-approval → re-run with `--yes`. Same exit codes as spawn.
+approval → re-run with `--yes`. Same exit codes as spawn. The Vast SSH
+self-check (see spawn) runs on the clone too — for `--with-data`, SSH is
+verified first, then the data copy starts (`--ssh-key`/`--ssh-wait-timeout`/
+`--no-ssh-wait` apply).
 
 ### 6. Terminate an instance
 
@@ -168,6 +205,9 @@ running-instance burn rate. Vast: prepaid credit balance, burn rate, instance co
 - `cloudops-dashboard` — read-only local web dashboard at http://127.0.0.1:8787
   (stat tiles for running instances / burn rate / month-to-date spend / Vast balance,
   plus a live instance table).
+- `<skill-root>/.venv/bin/vastai` — the bundled official Vast.ai CLI, for any raw
+  Vast operation the scripts above don't cover (`vastai --help`). Same venv, same
+  API key; the skill uses this exact binary internally.
 
 ## Cost-safety rules for agents
 

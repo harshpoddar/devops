@@ -33,7 +33,7 @@ require_deps()  # exits 4 with install.sh instructions if deps are missing
 
 from cloudops import render
 from cloudops.providers import CloudOpsError, get_provider
-from cloudops.spawn_flow import run_spawn_flow
+from cloudops.spawn_flow import make_ssh_verify_post_spawn, run_spawn_flow
 
 
 def main() -> int:
@@ -57,6 +57,13 @@ def main() -> int:
                              "(default: no reboot, crash-consistent)")
     parser.add_argument("--open-port", type=int, action="append", dest="open_ports", metavar="PORT",
                         help="expose a TCP port on the clone (repeatable; see spawn_instance)")
+    parser.add_argument("--ssh-key", help="Vast: SSH public key to register/attach and verify with "
+                                          "(default: ~/.ssh/id_ed25519.pub, then id_rsa.pub)")
+    parser.add_argument("--ssh-wait-timeout", type=int, default=720, metavar="SEC",
+                        help="Vast: max seconds to wait for SSH login on the clone before reporting "
+                             "(default 720)")
+    parser.add_argument("--no-ssh-wait", action="store_true",
+                        help="skip the post-spawn SSH login check on the clone")
     parser.add_argument("--max-hourly", type=float, help="hard guard: abort if the quote exceeds this USD/hour")
     parser.add_argument("--quote", action="store_true", help="print the cost quote and exit — creates nothing")
     parser.add_argument("--yes", action="store_true",
@@ -84,8 +91,11 @@ def main() -> int:
         spec["disk_gb"] = args.disk_gb
     if args.open_ports:
         spec["open_ports"] = args.open_ports
+    spec["ssh_pubkey_path"] = args.ssh_key
 
-    pre_spawn = post_spawn = None
+    # data_copy(result) -> note: the --with-data replication step (Vast side),
+    # chained to run once the clone is up.
+    pre_spawn = data_copy = None
     if args.with_data:
         if args.provider == "aws":
             def pre_spawn(spec_):
@@ -96,9 +106,9 @@ def main() -> int:
                     )
                 spec_["ami"] = provider.snapshot_image(args.id, reboot=args.reboot_source)
         else:
-            def post_spawn(result):
+            def data_copy(result):
                 if not args.json:
-                    render.console.print("Waiting for the clone to boot before copying data...")
+                    render.console.print("Ensuring the clone is up before copying data...")
                 provider.wait_for_status(result.instance_id, "running", timeout_seconds=600)
                 msg = provider.copy_data(args.id, result.instance_id, args.data_path, args.data_path)
                 return (f"Data copy {args.id}:{args.data_path} → {result.instance_id}:"
@@ -109,6 +119,19 @@ def main() -> int:
             f"Cloning [bold]{args.id}[/bold] — configuration only; "
             "[yellow]disk contents are NOT copied[/yellow] (use --with-data for that)."
         )
+
+    # Verify SSH on the clone before reporting success (Vast; AWS no-ops), then
+    # run the data copy. --no-ssh-wait skips the check but still copies data.
+    if not args.no_ssh_wait:
+        post_spawn = make_ssh_verify_post_spawn(
+            provider,
+            timeout_seconds=args.ssh_wait_timeout,
+            pubkey_path=args.ssh_key,
+            as_json=args.json,
+            then=data_copy,
+        )
+    else:
+        post_spawn = data_copy
 
     return run_spawn_flow(
         provider,

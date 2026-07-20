@@ -146,6 +146,32 @@ class Provider(ABC):
         """Copy a directory between two instances; returns a status message."""
         raise CloudOpsError(f"The {self.name} provider does not support instance-to-instance copy.")
 
+    def ssh_command(self, instance: "Instance") -> Optional[str]:
+        """The ready-to-run `ssh …` command a user would type to reach this instance,
+        or None if the provider can't express one (e.g. no key / not an SSH box)."""
+        return None
+
+    def wait_for_ssh(
+        self,
+        instance_id: str,
+        *,
+        timeout_seconds: int = 720,
+        poll_seconds: int = 15,
+        pubkey_path: Optional[str] = None,
+    ) -> dict:
+        """Block until an actual SSH login to the instance succeeds.
+
+        Returns a dict: ``{"ok": bool|None, "ssh": str|None, "detail": str,
+        "endpoint": str|None}``. ``ok`` is None when the provider does not
+        implement SSH verification (callers should treat that as "skip", not a
+        failure). Providers that create SSH-reachable boxes override this."""
+        return {
+            "ok": None,
+            "ssh": None,
+            "endpoint": None,
+            "detail": f"SSH verification is not implemented for the {self.name} provider.",
+        }
+
     def wait_for_status(self, instance_id: str, want: str = "running",
                         timeout_seconds: int = 600, poll_seconds: int = 10) -> None:
         import time

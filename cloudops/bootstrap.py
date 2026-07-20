@@ -12,7 +12,10 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-REQUIRED = ("boto3", "requests", "rich")
+# `vastai` is the official Vast.ai CLI the Vast backend shells out to; it lives in
+# this skill's venv so the whole thing is self-contained. `requests` is no longer a
+# direct dependency (it arrives transitively via vastai) so it is not checked here.
+REQUIRED = ("boto3", "rich", "vastai")
 EXIT_NOT_INSTALLED = 4
 
 

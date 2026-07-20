@@ -12,10 +12,15 @@ agent reads; each capability is a standalone script under `scripts/` with a
 ## Install
 
 ```bash
-./install.sh              # AWS CLI v2 (if missing) + .venv with the cloudops package
+./install.sh              # AWS CLI v2 (if missing) + .venv with cloudops AND the vastai CLI
 aws configure             # or: aws configure sso && aws sso login
 export VAST_API_KEY=...   # optional — https://cloud.vast.ai/account/
 ```
+
+The Vast.ai backend drives the official **`vastai` CLI** (not Vast's raw REST API,
+which returns intermittent 410s during its ongoing v0→v1 migration). `vastai` is a
+Python dependency, so `install.sh` pip-installs it **into this skill's own `.venv`**
+and the skill always calls that copy — self-contained, never a `vastai` on your PATH.
 
 The installer also links `cloudops` and `cloudops-dashboard` into `~/.local/bin`
 (adding it to your shell PATH if needed), so both commands work globally — no
@@ -30,7 +35,7 @@ install.sh                   AWS CLI + venv + credential checks
 cloudops/                    shared Python package
   providers/base.py          datatypes + Provider interface
   providers/aws.py           EC2 via boto3 (pricing via the AWS Pricing API, cached)
-  providers/vast.py          Vast.ai REST API
+  providers/vast.py          Vast.ai via the official `vastai` CLI (bundled in .venv)
   cli.py                     `cloudops` interactive terminal CLI
   dashboard.py               `cloudops-dashboard` local web dashboard (stdlib, :8787)
 scripts/

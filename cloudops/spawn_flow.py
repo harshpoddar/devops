@@ -14,6 +14,50 @@ from . import config, render
 from .providers import CloudOpsError, Provider
 
 
+def make_ssh_verify_post_spawn(
+    provider: Provider,
+    *,
+    timeout_seconds: int = 720,
+    poll_seconds: int = 15,
+    pubkey_path: Optional[str] = None,
+    as_json: bool = False,
+    then: Optional[Callable] = None,
+):
+    """Build a post_spawn callback that verifies SSH login before we call the
+    spawn a success, then optionally chains ``then(result)`` (e.g. a data copy).
+
+    Providers that don't implement SSH verification return ok=None and are
+    skipped silently. A failed/timed-out check never raises — the instance
+    already exists and must be reported (never destroyed) with guidance."""
+
+    def _post(result) -> Optional[str]:
+        notes = []
+        try:
+            res = provider.wait_for_ssh(
+                result.instance_id,
+                timeout_seconds=timeout_seconds,
+                poll_seconds=poll_seconds,
+                pubkey_path=pubkey_path,
+            )
+        except CloudOpsError as exc:
+            res = {"ok": False, "ssh": None, "detail": f"SSH check errored: {exc}"}
+        if res.get("ok") is True:
+            notes.append(f"✓ SSH verified — connect with:\n    {res['ssh']}")
+        elif res.get("ok") is False:
+            note = f"⚠ SSH not verified yet: {res.get('detail', '')}"
+            if res.get("ssh"):
+                note += f"\n    Try:  {res['ssh']}"
+            notes.append(note)
+        # ok is None → provider doesn't support verification; stay quiet.
+        if then is not None:
+            extra = then(result)
+            if extra:
+                notes.append(extra)
+        return "\n".join(notes) if notes else None
+
+    return _post
+
+
 def run_spawn_flow(
     provider: Provider,
     provider_name: str,
