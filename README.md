@@ -22,36 +22,32 @@ which returns intermittent 410s during its ongoing v0→v1 migration). `vastai` 
 Python dependency, so `install.sh` pip-installs it **into this skill's own `.venv`**
 and the skill always calls that copy — self-contained, never a `vastai` on your PATH.
 
-The installer also links `cloudops` and `cloudops-dashboard` into `~/.local/bin`
-(adding it to your shell PATH if needed), so both commands work globally — no
-venv activation required. Agent scripts under `scripts/` still run with the
-skill's interpreter: `.venv/bin/python scripts/<name>/<name>.py`.
+The installer links `cloudops` and `cloudops-dashboard` into `~/.local/bin`
+(adding it to your shell PATH if needed), so they work globally — no venv
+activation required. Every operation is a subcommand: `cloudops offers`,
+`cloudops spawn`, `cloudops instances`, `cloudops terminate`, … (`cloudops --help`);
+bare `cloudops` opens an interactive menu. Agents run it self-contained in one
+shell: `source .venv/bin/activate && cloudops <command> …`.
 
 ## Layout
 
 ```
 SKILL.md                     agent contract: providers, commands, cost-approval rules
-install.sh                   AWS CLI + venv + credential checks
+install.sh                   AWS CLI + venv (incl. vastai CLI) + credential checks
 cloudops/                    shared Python package
   providers/base.py          datatypes + Provider interface
   providers/aws.py           EC2 via boto3 (pricing via the AWS Pricing API, cached)
   providers/vast.py          Vast.ai via the official `vastai` CLI (bundled in .venv)
-  cli.py                     `cloudops` interactive terminal CLI
+  cli.py                     `cloudops` — subcommand dispatcher + interactive menu
+  commands/                  one module per subcommand (spawn, offers, instances, …)
+  spawn_flow.py              quote → approval → create; SSH-verify post-spawn helper
   dashboard.py               `cloudops-dashboard` local web dashboard (stdlib, :8787)
-scripts/
-  list_instances/            running/stopped instances across providers
-  list_offers/               purchasable types & GPU offers with $/hr, filterable
-  spawn_instance/            quote → user approval → create (tagged + audit-logged)
-  start_instance/            start a stopped instance (billing resumes)
-  stop_instance/             stop without destroying (storage still bills)
-  clone_instance/            recreate an instance as a new one; --with-data for a full replica
-  terminate_instance/        confirm → destroy (unmanaged AWS instances need --force)
-  account_metrics/           month-to-date spend, burn rate, Vast balance
+scripts/                     legacy thin shims (delegate to cloudops.commands.*)
 ```
 
 ## Cost safety
 
-- `spawn_instance` **always quotes first**; non-interactive runs must pass `--yes`,
+- `cloudops spawn` **always quotes first**; non-interactive runs must pass `--yes`,
   which agents may only do after the user approves the quoted cost. `--max-hourly`
   is a hard cap on top.
 - Everything created is tagged `managed-by=cloudops-skill`; terminating anything

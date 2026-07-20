@@ -34,37 +34,39 @@ aws configure         # or: aws configure sso && aws sso login
 export VAST_API_KEY=...   # optional, only for Vast (or ~/.config/vastai/vast_api_key)
 ```
 
-**Always run scripts with the skill's own interpreter**: `<skill-root>/.venv/bin/python`
-(created by `install.sh`). Do not use the system `python3` or another project's venv.
-If `.venv` is missing, run `./install.sh` first. Scripts self-check on start: if
-dependencies are missing they exit with code **4** and print the exact fix
-(run `./install.sh`, or the correct interpreter path to re-run with) — relay that
-message to the user or run the installer, then retry.
+### Running commands — one CLI, `cloudops <command>`
 
-**The bundled Vast CLI command**: the Vast backend shells out to the official
-`vastai` CLI, which `install.sh` installs **into this skill's own venv**. The skill
-always calls that copy by absolute path — `<skill-root>/.venv/bin/vastai` — so it
-never depends on a `vastai` on the user's PATH. For manual/advanced Vast operations
-not exposed by the scripts, invoke it directly the same way, e.g.:
+Every operation is a subcommand of **`cloudops`**, a console command installed into
+the skill's own `.venv` by `install.sh` (so it always runs under the skill's venv
+python — never the system one). Because each of your shells is fresh, **activate the
+venv and run the command in the same shell**:
 
 ```bash
-<skill-root>/.venv/bin/vastai show instances --raw
-<skill-root>/.venv/bin/vastai search offers 'gpu_name=RTX_4090 num_gpus=1' -o dph_total --raw
+source <skill-root>/.venv/bin/activate && cloudops <command> [options] [--json]
 ```
 
-(It reads the API key from `~/.config/vastai/vast_api_key`, or pass `--api-key`.)
+Or call it by absolute path without activating:
+`<skill-root>/.venv/bin/cloudops <command> …`. Run `cloudops --help` for the full
+list; every command takes `--help`. Prefer `--json` when you are an agent.
+`--provider aws|vast|all` and `--region` apply where relevant; a provider with
+missing credentials is reported in the `errors` field without failing the others.
+If `.venv` is missing, run `./install.sh` first.
 
-## Scripts
+> The old `scripts/<name>/<name>.py` files still work as thin wrappers (run them
+> with `<skill-root>/.venv/bin/python`), but `cloudops <command>` is the supported
+> path. Wrappers self-check deps and exit **4** with the fix if the venv is broken.
 
-Every script accepts `--json` (machine-readable output — prefer it when you are
-an agent) and, where it applies, `--provider aws|vast|all` and `--region`.
-A provider with missing credentials is reported in the `errors` field without
-failing the others.
+**Raw Vast CLI**: for Vast operations these commands don't cover, the bundled
+`vastai` CLI is right there in the venv — `<skill-root>/.venv/bin/vastai --help`
+(reads the key from `~/.config/vastai/vast_api_key`, or pass `--api-key`), e.g.
+`… /vastai search offers 'gpu_name=RTX_4090 num_gpus=1' -o dph_total --raw`.
+
+## Commands
 
 ### 1. List instances
 
 ```bash
-python scripts/list_instances/list_instances.py [--provider all] [--region us-east-1] [--json]
+cloudops instances [--provider all] [--region us-east-1] [--json]
 ```
 
 Returns id, name, status, type, region, IP/SSH endpoint, $/hr, whether the
@@ -75,7 +77,7 @@ host ports. Use this whenever the user asks what's running or needs an instance 
 ### 2. List offers — instance types / GPU offers with pricing, filterable
 
 ```bash
-python scripts/list_offers/list_offers.py [--provider all] \
+cloudops offers [--provider all] \
   [--gpus 1] [--gpu-type "A100"] [--cuda 12.8] [--min-vcpus 8] [--min-memory 32] \
   [--max-hourly 1.50] [--limit 15] [--json]
 ```
@@ -99,12 +101,12 @@ results are cached for a week in `~/.cloudops/cache/`.
 
 ```bash
 # AWS
-python scripts/spawn_instance/spawn_instance.py --provider aws --type g5.xlarge \
+cloudops spawn --provider aws --type g5.xlarge \
   [--region us-east-1] [--ami ami-...] [--disk 100] [--key-name my-key] \
   [--security-group sg-...] [--open-port 8888] [--name train-run-1] [--ttl-hours 8] --quote
 
-# Vast (pick an --offer-id from list_offers, or auto-pick cheapest by GPU)
-python scripts/spawn_instance/spawn_instance.py --provider vast \
+# Vast (pick an --offer-id from `cloudops offers`, or auto-pick cheapest by GPU)
+cloudops spawn --provider vast \
   --gpu-type "RTX 4090" --gpus 1 [--cuda 12.8] [--image pytorch/pytorch:latest] \
   [--disk 40] [--open-port 8888] [--ssh-key ~/.ssh/id_ed25519.pub] \
   [--ssh-wait-timeout 720] [--no-ssh-wait] --quote
@@ -120,7 +122,7 @@ dedicated, tagged security group **open to 0.0.0.0/0** (tell the user; port 22
 is auto-added when --key-name is given and no explicit --security-group);
 `--security-group sg-...` attaches existing groups for finer control. On Vast
 each exposed port is mapped to a **random public host port** — read the actual
-mapping from the `ports` field of list_instances --json once running.
+mapping from the `ports` field of `cloudops instances --json` once running.
 
 Vast SSH — automatic key setup + self-check (this is the fix for the old
 "Permission denied (publickey)" flakiness): after creating, spawn registers your
@@ -148,20 +150,20 @@ Guards and behavior:
 ### 4. Start / stop an instance
 
 ```bash
-python scripts/start_instance/start_instance.py --provider vast --id 12345 [--yes] [--json]
-python scripts/stop_instance/stop_instance.py  --provider vast --id 12345 [--yes] [--json]
+cloudops start --provider vast --id 12345 [--yes] [--json]
+cloudops stop  --provider vast --id 12345 [--yes] [--json]
 ```
 
 Confirmation required (get the user's OK, then `--yes`); unmanaged AWS instances
 need `--force`. Cost facts to tell the user: stopping halts compute/GPU billing
 but **storage keeps billing** on both providers; on Vast a restart is **not
 guaranteed** — the host may rent the GPUs to someone else while stopped. If a
-Vast start fails with no capacity, offer clone_instance instead.
+Vast start fails with no capacity, offer `cloudops clone` instead.
 
 ### 5. Clone an instance
 
 ```bash
-python scripts/clone_instance/clone_instance.py --provider vast --id 12345 \
+cloudops clone --provider vast --id 12345 \
   [--with-data] [--data-path /workspace] [--offer-id N] [--cuda VER] [--name X] \
   [--disk GB] [--open-port N] [--ssh-key PATH] [--ssh-wait-timeout SEC] \
   [--no-ssh-wait] [--max-hourly USD] --quote
@@ -184,16 +186,16 @@ verified first, then the data copy starts (`--ssh-key`/`--ssh-wait-timeout`/
 ### 6. Terminate an instance
 
 ```bash
-python scripts/terminate_instance/terminate_instance.py --provider aws --id i-0abc... [--yes] [--json]
+cloudops terminate --provider aws --id i-0abc... [--yes] [--json]
 ```
 
 Confirmation required (same rule as spawning: get the user's OK, then `--yes`).
 AWS instances **not** tagged `managed-by=cloudops-skill` additionally need `--force`.
 
-### 7. Account metrics
+### 7. Account metrics — `cloudops usage`
 
 ```bash
-python scripts/account_metrics/account_metrics.py [--provider all] [--json]
+cloudops usage [--provider all] [--json]
 ```
 
 AWS: month-to-date spend by service (Cost Explorer — each query costs ~$0.01),
@@ -201,13 +203,12 @@ running-instance burn rate. Vast: prepaid credit balance, burn rate, instance co
 
 ## Human tools (mention these to the user, don't drive them yourself)
 
-- `cloudops` — interactive terminal CLI: overall usage + instance details as tables.
-- `cloudops-dashboard` — read-only local web dashboard at http://127.0.0.1:8787
-  (stat tiles for running instances / burn rate / month-to-date spend / Vast balance,
-  plus a live instance table).
-- `<skill-root>/.venv/bin/vastai` — the bundled official Vast.ai CLI, for any raw
-  Vast operation the scripts above don't cover (`vastai --help`). Same venv, same
-  API key; the skill uses this exact binary internally.
+- `cloudops` with **no arguments** — interactive terminal menu (overall usage +
+  instance details as tables). The `cloudops <command>` subcommands above are the
+  agent-facing interface; bare `cloudops` is the human menu.
+- `cloudops-dashboard` (or `cloudops dashboard`) — read-only local web dashboard at
+  http://127.0.0.1:8787 (stat tiles for running instances / burn rate / month-to-date
+  spend / Vast balance, plus a live instance table).
 
 ## Cost-safety rules for agents
 

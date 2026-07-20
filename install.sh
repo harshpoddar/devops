@@ -106,10 +106,16 @@ else
   echo "  spawns can register it and verify SSH login before reporting success."
 fi
 
-cat <<'EOF'
+cat <<EOF
 
 Next steps (from any directory):
-  cloudops                                                  # interactive CLI (usage + instances)
-  cloudops-dashboard                                        # local web dashboard on :8787
-  .venv/bin/python scripts/list_instances/list_instances.py # agent scripts (from this repo)
+  cloudops                       # interactive menu (usage + instances)
+  cloudops --help                # list all subcommands
+  cloudops offers --provider vast --gpu-type "RTX 4090"
+  cloudops spawn  --provider vast --offer-id <id> --quote
+  cloudops-dashboard             # local web dashboard on :8787
+
+Agents — keep it self-contained in one shell (each of your shells is fresh):
+  source $(pwd)/.venv/bin/activate && cloudops <command> ...
+  # or without activating:  $(pwd)/.venv/bin/cloudops <command> ...
 EOF
